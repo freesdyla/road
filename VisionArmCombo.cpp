@@ -4,6 +4,31 @@ VisionArmCombo::VisionArmCombo() :
 	voxel_grid_size_(0.002f),
 	counter_(0)
 {
+	std::ifstream input("pot_labels.txt");
+
+	if (input.is_open())
+	{
+		int line_num = 0;
+		for (std::string line; std::getline(input, line); line_num++)
+		{
+			if (line_num == 0) continue;
+			//std::cout << line << std::endl;
+
+			boost::replace_all(line, ",", "_");
+
+			pot_labels.push_back(line);
+
+			std::cout << line << "\n";
+		}
+
+		std::cout << "pot num: " << pot_labels.size() << "\n";
+
+	}
+	else
+	{
+		std::cout << "cannot open file\n";
+	}
+
 	initVisionCombo();
 }
 
@@ -14,6 +39,10 @@ VisionArmCombo::~VisionArmCombo()
 
 void VisionArmCombo::initVisionCombo()
 {
+	initPotMap();
+	initRobotArmClient();
+	initLineProfiler();
+
 #if 1
 	gripper_.activate();
 	gripper_.open();
@@ -22,7 +51,6 @@ void VisionArmCombo::initVisionCombo()
 #if 1
 	initEXO_RGB_Cam();
 #endif
-
 
 	viewer_.reset(new pcl::visualization::PCLVisualizer("3D Viewer"));
 	viewer_->addCoordinateSystem(0.3);
@@ -173,12 +201,25 @@ void VisionArmCombo::initVisionCombo()
 	sor_.setMeanK(50);
 	sor_.setStddevMulThresh(1.0);
 
-	return;
+	fs.open("road_parameters.yml", cv::FileStorage::READ);
 
-	int status = motor_controller_.Connect("COM2");
+	if (fs.isOpened())
+	{
+		fs["move_arm_speed_"] >> move_arm_speed_;
+		fs["move_arm_acceleration_"] >> move_arm_acceleration_;
+		fs["move_joint_speed_"] >> move_joint_speed_;
+		fs["move_joint_acceleration_"] >> move_joint_acceleration_;
+		fs["view_time_"] >> view_time_;
+
+		fs.release();
+	}
+
+	int status = motor_controller_.Connect("COM1");
 
 	if (status != RQ_SUCCESS)
 		std::cout << "Error connecting to motor controller: " << status << "\n";
+
+
 }
 
 void VisionArmCombo::pp_callback(const pcl::visualization::PointPickingEvent& event, void*)
@@ -3571,7 +3612,7 @@ bool VisionArmCombo::scanSphereOnTable(Eigen::Vector3d & hand_pos, Eigen::Vector
 	pose_eigen(3, 3) = 1.;
 
 	pose_eigen(0, 3) = hand_pos(0);
-	pose_eigen(1, 3) = hand_pos(1);
+	pose_eigen(1, 3) = hand_pos(1) + sign*0.075;
 	pose_eigen(2, 3) = hand_pos(2);
 
 	eigenMat4dToArray6(pose_eigen, pose);
@@ -3598,15 +3639,16 @@ bool VisionArmCombo::scanSphereOnTable(Eigen::Vector3d & hand_pos, Eigen::Vector
 
 	pcl::transformPointCloud(*scan_cloud, *scan_cloud, cur_pose*handToScanner_);
 
-	//viewer_->addPointCloud(scan_cloud, "sphere_cloud" + std::to_string(GetTickCount()), 0);
-	//viewer_->spin();
+	//viewer_->addPointCloud(scan_cloud, "sphere_cloud" + std::to_string(GetTickCount()), 0); viewer_->spin();
 
 	PointCloudT::Ptr tmp_cloud(new PointCloudT);
 	pass_.setInputCloud(scan_cloud);
 	pass_.setFilterFieldName("z");
-	pass_.setFilterLimits(0.06, 0.2);
+	pass_.setFilterLimits(0.12, 0.25);
 	pass_.setNegative(false);
 	pass_.filter(*tmp_cloud);
+
+	//viewer_->addPointCloud(tmp_cloud, "sphere_cloud" + std::to_string(GetTickCount()), 0); viewer_->spin();
 
 	pcl::ModelCoefficients coefficients;
 	pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
@@ -3925,23 +3967,23 @@ int VisionArmCombo::sendRoboteqVar(int id, int value)
 	int status = motor_controller_.SetCommand(_VAR, id, value);
 
 	// send success, but status != RQ_SUCCESS, roboteq bug
-	//if ( status != RQ_SUCCESS)
-	//{
-		//cout << "set Roboteq VAR failed --> " << status << endl;
-		//return -1;
-	//}
+	if ( status != RQ_SUCCESS)
+	{
+		cout << "set Roboteq VAR failed --> " << status << endl;
+		return -1;
+	}
 
-	sleepms(10);
+	sleepms(1000);
 
-	//int result = -1;
-	//status = motor_controller_.GetValue(_VAR, id, result);
+	int result = -1;
+	status = motor_controller_.GetValue(_VAR, id, result);
 
-	//if (status != RQ_SUCCESS)
-//	{
-	//	cout << "get var failed --> " << status << endl;
-	//}
+	if (status != RQ_SUCCESS)
+	{
+		cout << "get var failed --> " << status << endl;
+	}
 
-//	std::cout << "result: " << result << "\n";
+	std::cout << "result: " << result << "\n";
 
 	return 0;
 }
@@ -4439,7 +4481,7 @@ void VisionArmCombo::find3DMarker(PointCloudT::Ptr marker_cloud)
 	}
 }
 
-void VisionArmCombo::localizeByScanSpheres(int robot_stop, int side)
+bool VisionArmCombo::localizeByScanSpheres(int robot_stop, int side)
 {
 	if (robot_arm_client_ == NULL) initRobotArmClient();
 	if (line_profiler_ == NULL) initLineProfiler();
@@ -4449,7 +4491,7 @@ void VisionArmCombo::localizeByScanSpheres(int robot_stop, int side)
 	if (cur_pose(2, 2) >= 0.)	//check z direction
 	{
 		std::cout << "gripper pointing down!\n";
-		return;
+		return false;
 	}
 
 	double sign;
@@ -4457,25 +4499,91 @@ void VisionArmCombo::localizeByScanSpheres(int robot_stop, int side)
 	else if (side == 1) sign = -1.0;
 	else std:cout << "wrong side\n";
 
-	// first ball
-	Eigen::Vector3d hand_pos;
-	if (robot_stop != 2)
+	double array6[6];
+
+	// if hand is on the other side, go to an intermediate position first
+	if (cur_pose(0, 3)*sign < 0.)	
 	{
-		hand_pos << sign*0.44, -0.385, 0.4;
-	}
-	else
-	{
-		hand_pos << sign*0.44, 0.2032 -0.385, 0.4;
+		double cur_joints[6];
+		robot_arm_client_->getCurJointPose(cur_joints);
+
+		array6[0] = 90; array6[1] = -90;
+		array6[2] = -90; array6[3] = -90;
+		array6[4] = 90; array6[5] = 0;
+		for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+
+		double dist = 0.;
+		for (int i = 0; i < 6; i++)
+		{
+			dist += std::abs(cur_joints[i] - array6[i]);
+		}
+
+		if (dist > 0.01)
+		{
+			//check hand x coordinate
+			if (cur_pose(0, 3) > 0)	//left side table 0
+			{
+				array6[0] = 0; array6[1] = -90;
+				array6[2] = -90; array6[3] = -90;
+				array6[4] = 90; array6[5] = 0;
+				for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+				robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+				std::cout << "above table 0\n";
+			}
+			else
+			{
+				array6[0] = 180; array6[1] = -90;
+				array6[2] = -90; array6[3] = -90;
+				array6[4] = 90; array6[5] = 0;
+				for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+				robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+				std::cout << "above table 1\n";
+			}
+
+			//above balance
+			array6[0] = 90; array6[1] = -90;
+			array6[2] = -90; array6[3] = -90;
+			array6[4] = 90; array6[5] = 0;
+			for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+			robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+			std::cout << "above balance\n";
+		}
 	}
 
-	if (side == 1) hand_pos(1) += sign*0.09;
+	if (side == 0)
+	{
+		array6[0] = 0; array6[1] = -90;
+		array6[2] = -90; array6[3] = -90;
+		array6[4] = 90; array6[5] = 0;
+		for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+		robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+		std::cout << "above table 0\n";
+	}
+	else if (side == 1)
+	{
+		array6[0] = 180; array6[1] = -90;
+		array6[2] = -90; array6[3] = -90;
+		array6[4] = 90; array6[5] = 0;
+		for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+		robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+		std::cout << "above table 1\n";
+	}
+
+	// first ball
+	Eigen::Vector3d hand_pos;
+	hand_pos << sign*0.44, -0.385, 0.44;
 
 	scanSphereOnTable(hand_pos, sphere_pos1_, side);
 
 	if (sphere_pos1_(2) < 0.04 || sphere_pos1_(2) > 0.16)
 	{
 		std::cout << "sphere position out of range\n";
-		return;
+		return false;
 	}
 
 	// second ball the other side
@@ -4485,25 +4593,18 @@ void VisionArmCombo::localizeByScanSpheres(int robot_stop, int side)
 	if (sphere_pos2_(2) < 0.04 || sphere_pos2_(2) > 0.16)
 	{
 		std::cout << "sphere position out of range\n";
-		return;
+		return false;
 	}
 
 	// third ball
-	if (robot_stop == 2)
-	{
-		hand_pos(0) -= sign*0.685; hand_pos(1) += 4*4*0.0254;
-	}
-	else 
-	{
-		hand_pos(0) -= sign*0.685; hand_pos(1) += 0.3048;
-	}
+	hand_pos(0) -= sign*0.685; hand_pos(1) += 0.3048;
 
 	scanSphereOnTable(hand_pos, sphere_pos3_, side);
 
 	if (sphere_pos3_(2) < 0.04 || sphere_pos3_(2) > 0.16)
 	{
 		std::cout << "sphere position out of range\n";
-		return;
+		return false;
 	}
 
 //	std::cout << "1-3: " << (sphere_pos1_ - sphere_pos3_).norm() << "\n";
@@ -4521,37 +4622,14 @@ void VisionArmCombo::localizeByScanSpheres(int robot_stop, int side)
 
 	table_normal_z_ = table_normal_x_.cross(table_normal_y_);
 
-	int local_pot_x = 0;
-	int local_pot_y = 0;
-
-	// go to a safe position to rotate wrist
-	double array6[6];
-	array6[0] = 0.659; array6[1] = -0.136; array6[2] = 0.513;
-	array6[3] = 2.1341; array6[4] = -2.3057; array6[5] = -0.0002;
-//	robot_arm_client_->moveHandL(array6, 0.1, 0.1);
-//	robot_arm_client_->waitTillHandReachDstPose(array6);
-//	robot_arm_client_->rotateJointRelative(4, 180., 0.6, 0.6);
-	//gripper_.close();
-
-	//std::getchar();
 	hand_pose_above_pot_eigen_ = Eigen::Matrix4d::Identity();
-
 	hand_pose_above_pot_eigen_.col(0).head<3>() = -sign*table_normal_y_;
 	hand_pose_above_pot_eigen_.col(1).head<3>() = -sign*table_normal_x_;
 	hand_pose_above_pot_eigen_.col(2).head<3>() = -table_normal_z_;
 
-	viewer_->spin();
+	display();
 
-	for (local_pot_y = 0; local_pot_y < 7; local_pot_y++)
-	{
-		for (local_pot_x = 0; local_pot_x < 6; local_pot_x++)
-		{
-			//gotoPot(robot_stop, side, local_pot_x, local_pot_y);
-			scanPot(robot_stop, side, local_pot_x, local_pot_y);
-			std::getchar();
-		}
-	}
-
+	return true;
 }
 
 void VisionArmCombo::gotoPot(int robot_stop, int side, int local_pot_x, int local_pot_y, bool open_gripper)
@@ -4568,52 +4646,41 @@ void VisionArmCombo::gotoPot(int robot_stop, int side, int local_pot_x, int loca
 	if (side == 0) sign = 1.0;
 	else if (side == 1) sign = -1.0;
 	else std::cout << "wrong side in goto pot\n";
-
-	if (robot_stop == 0)
-	{
-		hand_pose_above_pot_eigen_.col(3).head<3>() = sphere_pos3_
-			+ table_normal_z_*(0.1)
-			+ sign*(table_offset_x_ + local_pot_x*pot2pot_dist_)*table_normal_x_
-			+ (table_offset_y_ - local_pot_y*pot2pot_dist_)*table_normal_y_
-			;
-	}
+	
+	hand_pose_above_pot_eigen_.col(3).head<3>() = sphere_pos3_
+		+ table_normal_z_*(0.15)
+		+ sign*(table_offset_x_ + local_pot_x*pot2pot_dist_)*table_normal_x_
+		+ (table_offset_y_ - local_pot_y*pot2pot_dist_)*table_normal_y_
+		;
 
 	// move to pot 
 	Eigen::Matrix4d tmp = hand_pose_above_pot_eigen_*hand_to_gripper_.inverse();
 	//Eigen::Matrix4d tmp = hand_pose_above_pot_eigen_;
 	double array6[6];
 	eigenMat4dToArray6(tmp, array6);
-	robot_arm_client_->moveHandL(array6, 0.1, 0.1);
+	robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
 	robot_arm_client_->waitTillHandReachDstPose(array6);
 
 	//return;
 
-	if (robot_stop == 0)
-	{
-		hand_pose_above_pot_eigen_.col(3).head<3>() += table_normal_z_*(-0.15);
-	}
+	hand_pose_above_pot_eigen_.col(3).head<3>() += table_normal_z_*(-0.20);
 
 	tmp = hand_pose_above_pot_eigen_*hand_to_gripper_.inverse();
 	eigenMat4dToArray6(tmp, array6);
-	robot_arm_client_->moveHandL(array6, 0.05, 0.05);
+	robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
 	robot_arm_client_->waitTillHandReachDstPose(array6);
 
 	if (open_gripper) gripper_.open();
 	else gripper_.close();
 
-	if (robot_stop == 0)
-	{
-		hand_pose_above_pot_eigen_.col(3).head<3>() += table_normal_z_*(0.15);
-	}
+	hand_pose_above_pot_eigen_.col(3).head<3>() += table_normal_z_*(0.20);
 
 	tmp = hand_pose_above_pot_eigen_*hand_to_gripper_.inverse();
 	eigenMat4dToArray6(tmp, array6);
-	robot_arm_client_->moveHandL(array6, 0.05, 0.05);
+	robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
 	robot_arm_client_->waitTillHandReachDstPose(array6);
 
-
 	std::cout << "reached\n";
-
 }
 
 void VisionArmCombo::scanPot(int robot_stop, int side, int local_pot_x, int local_pot_y)
@@ -4630,15 +4697,12 @@ void VisionArmCombo::scanPot(int robot_stop, int side, int local_pot_x, int loca
 	if (side == 0) sign = 1.0;
 	else if (side == 1) sign = -1.0;
 	else std:cout << "wrong side in scan pot\n";
-
-	if (robot_stop == 0)
-	{
-		hand_pose_above_pot_eigen_.col(3).head<3>() = sphere_pos3_
-			+ table_normal_z_*(0.17)
-			+ sign*(table_offset_x_ + local_pot_x*pot2pot_dist_)*table_normal_x_
-			+ (table_offset_y_ - local_pot_y*pot2pot_dist_)*table_normal_y_
-			;
-	}
+	
+	hand_pose_above_pot_eigen_.col(3).head<3>() = sphere_pos3_
+		+ table_normal_z_*(0.17)
+		+ sign*(table_offset_x_ + local_pot_x*pot2pot_dist_)*table_normal_x_
+		+ (table_offset_y_ - local_pot_y*pot2pot_dist_)*table_normal_y_
+		;
 
 	// move to pot 
 	Eigen::Matrix4d hand_to_scan_start = Eigen::Matrix4d::Identity();
@@ -4737,27 +4801,337 @@ void VisionArmCombo::scanPot(int robot_stop, int side, int local_pot_x, int loca
 	viewer_->spin();
 }
 
-void VisionArmCombo::gotoBalance()
+void VisionArmCombo::registerRGBandPointCloud(cv::Mat & rgb, PointCloudT::Ptr cloud_in_base, Eigen::Matrix4d & rgb_pose)
 {
-	if (robot_arm_client_ == NULL) initRobotArmClient();
+	std::vector<cv::Point3f> object_points(cloud_in_base->points.size());
+	for (int i = 0; i<cloud_in_base->points.size(); i++)
+	{
+		object_points[i].x = cloud_in_base->points[i].x;
+		object_points[i].y = cloud_in_base->points[i].y;
+		object_points[i].z = cloud_in_base->points[i].z;
+	}
+
+	Eigen::Matrix4d tmp_inverse = rgb_pose.inverse();
+
+	cv::Mat rot, tvec, rvec;
+	rot.create(3, 3, CV_64F);
+	tvec.create(3, 1, CV_64F);
+	for (int y = 0; y < 3; y++)
+		for (int x = 0; x < 3; x++)
+			rot.at<double>(y, x) = tmp_inverse(y, x);
+
+	tvec.at<double>(0, 0) = tmp_inverse(0, 3);
+	tvec.at<double>(1, 0) = tmp_inverse(1, 3);
+	tvec.at<double>(2, 0) = tmp_inverse(2, 3);
+
+	cv::Rodrigues(rot, rvec);
+	std::vector<cv::Point2f> img_points;
+	cv::projectPoints(object_points, rvec, tvec, kinect_rgb_camera_matrix_cv_, kinect_rgb_dist_coeffs_cv_, img_points);
+
+	for (int i = 0; i < cloud_in_base->points.size(); i++)
+	{
+		int x = std::round(img_points[i].x);
+		int y = std::round(img_points[i].y);
+
+		//std::cout << x << "  " << y << "\n";
+
+		if (x >= 0 && x < 1920 && y >= 0 && y < 1200)
+		{
+			cloud_in_base->points[i].b = exo_rgb_cam_->rgb_frame.at<cv::Vec3b>(y, x).val[0];
+			cloud_in_base->points[i].g = exo_rgb_cam_->rgb_frame.at<cv::Vec3b>(y, x).val[1];
+			cloud_in_base->points[i].r = exo_rgb_cam_->rgb_frame.at<cv::Vec3b>(y, x).val[2];
+		}
+	}
+
+#if 0
+	pcl::NormalEstimation<PointT, pcl::Normal> ne;
+	ne.setInputCloud(cloud_in_base);
+	ne.setRadiusSearch(0.002);
+
+	pcl::PointCloud<pcl::Normal>::Ptr cloud_normals(new pcl::PointCloud<pcl::Normal>());
+	ne.compute(*cloud_normals);
+
+	std::cout << "normal done\n";
+
+	pcl::PointCloud<pcl::PointNormal>::Ptr cloud_smoothed_normals(new pcl::PointCloud<pcl::PointNormal>());
+
+	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+	pcl::copyPointCloud(*cloud_in_base, *cloud);
+
+	pcl::concatenateFields(*cloud, *cloud_normals, *cloud_smoothed_normals);
+
+	pcl::Poisson<pcl::PointNormal> poisson;
+	poisson.setDepth(9);
+	poisson.setInputCloud(cloud_smoothed_normals);
+	pcl::PolygonMesh mesh;
+	poisson.reconstruct(mesh);
+
+	viewer_->addPolygonMesh(mesh, "mesh", 0);
+	viewer_->spin();
+#endif
+	viewer_->removeAllPointClouds();
+	viewer_->addPointCloud(cloud_in_base, "rgb_cloud", 0);
+	display();
+	viewer_->removeAllPointClouds();
+}
+
+void VisionArmCombo::transportPotOnBalance(bool open_finger_on_balance)
+{
+	double array6[6];
+
+	//move above balance
+	array6[0] = 124.05;	array6[1] = -49.11;
+	array6[2] = -129.18; array6[3] = -91.61;
+	array6[4] = 270.06; array6[5] = -34.01;
+	for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+	std::cout << "move above balance done\n";
+
+	// put it down
+	array6[0] = -0.020; array6[1] = 0.3458; array6[2] = 0.500;
+	array6[3] = 0; array6[4] = 0; array6[5] = M_PI;
+	robot_arm_client_->moveHandL(array6, 0.1, 0.1);
+	robot_arm_client_->waitTillHandReachDstPose(array6);
+
+	std::cout << "put it down\n";
+
+	// final
+	array6[0] = -0.02; array6[1] = 0.3458; array6[2] = 0.351;
+	array6[3] = 0; array6[4] = 0; array6[5] = M_PI;
+	robot_arm_client_->moveHandL(array6, 0.1, 0.05);
+	robot_arm_client_->waitTillHandReachDstPose(array6);
+
+	array6ToEigenMat4d(array6, release_pose_);
+
+	if (open_finger_on_balance)
+		gripper_.open();
+	else
+		gripper_.close();
+
+	Sleep(500);
+
+	// bring it up
+	array6[0] = -0.020; array6[1] = 0.3458; array6[2] = 0.500;
+	array6[3] = 0; array6[4] = 0; array6[5] = M_PI;
+	robot_arm_client_->moveHandL(array6, 0.1, 0.1);
+	robot_arm_client_->waitTillHandReachDstPose(array6);
+
+	std::cout << "bring it up\n";
+
+	//move above balance
+	array6[0] = 124.05;	array6[1] = -49.11;
+	array6[2] = -129.18; array6[3] = -91.61;
+	array6[4] = 270.06; array6[5] = -34.01;
+	for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+	std::cout << "move above balance\n";
+}
+
+void VisionArmCombo::gotoBalance(int pot_id)
+{
+	transportPotOnBalance(true);
+
+	double array6[6];
+	//switch camera
+	robot_arm_client_->getCurJointPose(array6);
+	array6[4] = M_PI_2;
+	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+	// move to scan start pose
+	array6[0] = -0.2; array6[1] = 0.439; array6[2] = 0.294;
+	array6[3] = M_PI; array6[4] = 0; array6[5] = 0;
+	robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
+	robot_arm_client_->waitTillHandReachDstPose(array6);
+	Sleep(1000);
+
+	PointCloudT::Ptr scan_cloud(new PointCloudT);
+	PointCloudT::Ptr tmp_cloud(new PointCloudT);
 
 	Eigen::Matrix4f cur_pose; getCurHandPose(cur_pose);
 
-	if (cur_pose(2, 2) <= 0.)	//check z direction
+	double tran[3] = {0.15, 0, 0};
+	line_profiler_->m_vecProfileData.clear();
+	scanTranslateOnly(tran, scan_cloud, scan_acceleration_, scan_speed_);
+
+	pcl::transformPointCloud(*scan_cloud, *tmp_cloud, cur_pose*handToScanner_);
+
+	pass_.setInputCloud(tmp_cloud);
+	pass_.setNegative(false);
+	pass_.setFilterFieldName("z");
+	pass_.setFilterLimits(-0.04, 0.06);
+	pass_.filter(*scan_cloud);
+
+//	viewer_->addPointCloud(scan_cloud, "scan_cloud", 0);
+//	viewer_->spin();
+//	viewer_->removePointCloud("scan_cloud", 0);
+
+	Eigen::Matrix4d rgb_pose = release_pose_*hand_to_gripper_;
+	rgb_pose.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+	rgb_pose(1, 1) = -1.;
+	rgb_pose(2, 2) = -1.;
+	rgb_pose(2, 3) = 0.17;
+
+	Eigen::Matrix4d hand_pose = rgb_pose*hand_to_rgb_.inverse();
+	eigenMat4dToArray6(hand_pose, array6);
+
+	robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
+	robot_arm_client_->waitTillHandReachDstPose(array6);
+
+	Sleep(1000);
+	exo_rgb_cam_->acquireRGBImage();
+	cv::Mat undistort;
+	cv::undistort(exo_rgb_cam_->rgb_frame, undistort, kinect_rgb_camera_matrix_cv_, kinect_rgb_dist_coeffs_cv_);
+	cv::Mat tmp;
+	cv::resize(undistort, tmp, cv::Size(), 0.5, 0.5);
+	cv::imshow("exo", tmp);
+	cv::waitKey(100);
+
+	registerRGBandPointCloud(exo_rgb_cam_->rgb_frame, scan_cloud, rgb_pose);
+
+	if (pot_id < pot_labels.size())
 	{
-		std::cout << "gripper pointing up!\n";
+		std::string name = "Data\\" + pot_labels[pot_id];
+		
+		pcl::io::savePCDFileBinary(name + ".pcd", *scan_cloud);
+
+		vector<int> compression_params;
+		compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
+		compression_params.push_back(9);
+		cv::imwrite(name + ".png", undistort, compression_params);
+	}
+
+	//move above balance with camera facing down
+	array6[0] = -0.020; array6[1] = 0.3458; array6[2] = 0.500;
+	array6[3] = M_PI; array6[4] = 0; array6[5] = 0;
+	robot_arm_client_->moveHandL(array6, 0.1, 0.1);
+	robot_arm_client_->waitTillHandReachDstPose(array6);
+
+	//switch gripper
+	robot_arm_client_->getCurJointPose(array6);
+	array6[4] = M_PI_2*3.;
+	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+	transportPotOnBalance(false);
+}
+
+void VisionArmCombo::placePots(int operation)
+{
+	if (operation != PICK_POT && operation != PLACE_POT)
+	{
+		std::cout << "invalid operation\n";
 		return;
 	}
 
-	double pose[6];
-	Eigen::Matrix4d gripper_pose = Eigen::Matrix4d::Identity();
-	gripper_pose.col(3).head<3>() << 0, 0.4, 0.5;
-	Eigen::Matrix4d hand_pose = gripper_pose*hand_to_gripper_;
-	eigenMat4dToArray6(hand_pose, pose);
+	Eigen::Matrix4f cur_pose; getCurHandPose(cur_pose);
 
-	//pose[0] = -0.144; pose[1] = 0.375; pose[2] = 0.5, pose[3] = 0; pose[4] = 0; pose[5] = -1.047;
-	robot_arm_client_->moveHandL(pose, 0.1, 0.1);
-	robot_arm_client_->waitTillHandReachDstPose(pose);
+	if (cur_pose(2, 2) >= 0.)	//check z direction
+	{
+		std::cout << "gripper pointing down!\n";
+		return;
+	}
+
+	double array6[6];
+
+	for (int cur_robot_stop = 0; cur_robot_stop < 3; cur_robot_stop++)
+	{
+		// move robot to destination
+		sendRoboteqVar(1, cur_robot_stop+1);	//roboteq start from 1
+
+		std::cout << "sent\n";
+
+		Sleep(1000);
+
+		while (true)
+		{
+			int result = -1;
+			int target_marker_id = -1;
+			motor_controller_.GetValue(_VAR, 2, result);	//get current status
+			motor_controller_.GetValue(_VAR, 1, target_marker_id);	//get current status
+			std::cout << "status: "<< result <<" target marker:"<< target_marker_id<< "\n";
+			if (result == 1) break;
+			Sleep(500);
+		}
+
+		//std::cout << "Press key\n"; std::getchar(); continue;
+		
+		for (int cur_side = 1; cur_side >= 0; cur_side--)
+		{
+			viewer_->removeAllShapes();
+
+			if (localizeByScanSpheres(cur_robot_stop, cur_side))
+			{
+				//continue;
+
+				if (operation == PLACE_POT)	// move to operator
+					array6[0] = cur_side == 0 ? 45 : 135;	
+				else if (operation == PICK_POT) // move hand above table
+					array6[0] = cur_side == 0 ? 0 : 180;
+				array6[1] = -90;
+				array6[2] = -90; array6[3] = -90;
+				array6[4] = 90; array6[5] = 0;
+				for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+				robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+				// rotate gripper down
+				array6[4] = M_PI_2*3;
+				robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+				int count = 0;
+
+				for(int pot_id=0; pot_id<pot_map_.size(); pot_id++)
+				{
+					if (/*count%30 == 0 &&*/ pot_map_[pot_id].moisture >=0.f && pot_map_[pot_id].robot_stop == cur_robot_stop && pot_map_[pot_id].side == cur_side)
+					{
+						if (operation == PLACE_POT)
+						{
+							array6[0] = cur_side == 0 ? 45 : 135;
+							array6[1] = -90;
+							array6[2] = -90; array6[3] = -90;
+							array6[4] = 270; array6[5] = 0;
+							for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+							robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+							gripper_.close();
+							std::cout << "put in the pot\n";
+							std::getchar();
+							gotoPot(cur_robot_stop, cur_side, pot_map_[pot_id].local_pot_x, pot_map_[pot_id].local_pot_y, true);
+						}
+						else if (operation == PICK_POT)
+						{
+							gripper_.open();
+
+							Sleep(500);
+
+							gotoPot(cur_robot_stop, cur_side, pot_map_[pot_id].local_pot_x, pot_map_[pot_id].local_pot_y, false);
+							
+							gotoBalance(pot_id);
+
+							gotoPot(cur_robot_stop, cur_side, pot_map_[pot_id].local_pot_x, pot_map_[pot_id].local_pot_y, true);
+						}
+					}
+
+					count++;
+				}
+			}
+
+			// rotate gripper up
+			//above balance with gripper down
+			array6[0] = 90; array6[1] = -90;
+			array6[2] = -90; array6[3] = -90;
+			array6[4] = 270; array6[5] = 0;
+			for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+			robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+			array6[4] = M_PI*0.5;
+			robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+			std::cout << "robot stop: " << cur_robot_stop << "   side: " << cur_side << "\n";
+			//std::getchar();
+		}
+	}
 }
 
 void VisionArmCombo::initEXO_RGB_Cam()
@@ -4766,3 +5140,42 @@ void VisionArmCombo::initEXO_RGB_Cam()
 	exo_rgb_cam_->init();
 }
 
+void VisionArmCombo::initPotMap()
+{
+	pot_map_.resize(max_pots_);
+	for (int i = 0; i<max_pots_; i++)
+	{
+		int x = i % table_cols_;
+		int y = i / table_cols_;
+
+		Pot* p = &pot_map_[i];
+		p->moisture = 100.0f;
+
+		if (y < 7)
+		{
+			p->robot_stop = 0;
+			p->local_pot_y = y;
+		}
+		else if (y < 13)
+		{
+			p->robot_stop = 1;
+			p->local_pot_y = y - 7 + 1;	// 6 rows in the stop 1
+		}
+		else
+		{
+			p->robot_stop = 2;
+			p->local_pot_y = y - 13;
+		}
+
+		if (x < 6)
+		{
+			p->side = 1;
+			p->local_pot_x = table_cols_ / 2 - 1 - x;
+		}
+		else
+		{
+			p->side = 0;
+			p->local_pot_x = x - table_cols_ / 2;
+		}
+	}
+}

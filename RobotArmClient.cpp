@@ -113,7 +113,7 @@ void RobotArmClient::startRecvTCP()
 
 			displacement_ = EuclideanDistance(cur_cartesian_info_array, start_xyz_);
 
-			distanceToDstConfig_ = EuclideanDistance(cur_joint_pos_array, dst_joint_pos_array);
+			distanceToDstConfig_ = L1Distance(cur_joint_pos_array, dst_joint_pos_array);
 
 			updateMutex.unlock();
 
@@ -271,6 +271,7 @@ void RobotArmClient::printCartesianInfo(double* array6)
 	std::cout << '\n';
 }
 
+// only compute xyz distance
 double RobotArmClient::EuclideanDistance(double* pose6_1, double* pose6_2)
 {
 	double sum_squares = 0.;
@@ -283,6 +284,20 @@ double RobotArmClient::EuclideanDistance(double* pose6_1, double* pose6_2)
 	}
 
 	return sqrt(sum_squares);
+}
+
+double RobotArmClient::L1Distance(double* pose6_1, double* pose6_2)
+{
+	double L1 = 0.;
+
+	for (int i = 0; i < 6; i++)
+	{
+		double diff = abs(pose6_1[i] - pose6_2[i]);
+
+		L1 += diff;
+	}
+
+	return L1;
 }
 
 int RobotArmClient::waitTillHandReachDstPose(double* dst_pose6)
@@ -306,7 +321,7 @@ int RobotArmClient::waitTillHandReachDstConfig(double* dst_joint_config)
 
 	while (true)
 	{
-		if (distanceToDstConfig_ < 2e-5)
+		if (distanceToDstConfig_ < 0.003)
 			break;
 
 		Sleep(4);

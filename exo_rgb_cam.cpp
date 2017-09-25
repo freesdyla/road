@@ -70,9 +70,9 @@ int EXO_RGB_CAM::init()
 	float blue = 0;
 	Camera_getWhiteBalance(Camera, &red, &green, &blue);
 
-//	std::cout << "r: " << red << "g: " << green << "b: " << blue << "\n";
+	std::cout << "r: " << red << "g: " << green << "b: " << blue << "\n";
 
-	Camera_setWhiteBalance(Camera, 155.078f, 100.f, 214.063f);
+	Camera_setWhiteBalance(Camera, 121.484f, 100.f, 256.641f);
 
 	Camera_setFlippingMode(Camera, SVU3V_REVERSE_X_Y);
 
@@ -87,7 +87,7 @@ int EXO_RGB_CAM::init()
 
 	//------------------------------------------------------------------------
 	Camera_setAcquisitionMode(Camera, ACQUISITION_MODE_SOFTWARE_TRIGGER);
-	float  exposure = 50000; // 50 ms
+	float  exposure = 1400000; // us
 	Camera_setExposureTime(Camera, exposure);
 	float Gain = 0; // 0 db
 	Camera_setGain(Camera, Gain);

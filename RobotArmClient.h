@@ -100,6 +100,8 @@ struct RobotArmClient
 
 	double EuclideanDistance(double* pose6_1, double* pose6_2);
 
+	double L1Distance(double* pose6_1, double* pose6_2);
+
 	void setDstCartesianInfo(double* array6);
 
 	void setDstConfigInfo(double* array6);

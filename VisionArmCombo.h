@@ -5,6 +5,7 @@
 #include <pcl/point_types.h>
 #include <pcl/common/pca.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/io/ply_io.h>
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/sample_consensus/method_types.h>
 #include <pcl/sample_consensus/model_types.h>
@@ -25,6 +26,7 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/surface/mls.h>
 #include <pcl/surface/convex_hull.h>
+#include <pcl/surface/poisson.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/features/moment_of_inertia_estimation.h>
 #include <pcl/search/search.h>
@@ -49,6 +51,12 @@
 #include "GripperModbusRTU.h"
 
 #include "exo_rgb_cam.h"
+
+#include <boost/filesystem.hpp>
+using namespace boost::filesystem;
+
+#define PICK_POT 0x0
+#define PLACE_POT 0x1
 
 
 struct VisionArmCombo
@@ -159,21 +167,21 @@ struct VisionArmCombo
 
 	Eigen::Affine3f pre_viewer_pose_;
 
-	const float scan_acceleration_ = 0.5f;
+	float scan_acceleration_ = 0.5f;
 	
-	const float scan_speed_ = 0.1f;
+	float scan_speed_ = 0.1f;
 
-	const float move_arm_speed_ = 0.05f;
+	float move_arm_speed_ = 0.2f;
 
-	const float move_arm_acceleration_ = 0.1f;
+	float move_arm_acceleration_ = 0.05f;
 
-	const float move_joint_speed_ = 0.4f;
+	float move_joint_speed_ = 0.7f;
 
-	const float move_joint_acceleration_ = 0.5f;
+	float move_joint_acceleration_ = 0.2f;
 
-	const float speed_correction_ = 0;// -0.0085f;
+	float speed_correction_ = 0;// -0.0085f;
 
-	const int view_time_ = 0;
+	int view_time_ = 0;
 
 	int counter_;
 
@@ -204,6 +212,24 @@ struct VisionArmCombo
 	Eigen::Matrix4d hand_pose_above_pot_eigen_;
 	Eigen::Vector3d sphere_pos1_, sphere_pos2_, sphere_pos3_;
 	Eigen::Vector3d table_normal_x_, table_normal_y_, table_normal_z_;
+
+	struct Pot
+	{
+		float moisture;
+		int robot_stop;
+		int side;
+		int local_pot_x;
+		int local_pot_y;
+	};
+
+	const int table_rows_ = 20;
+	const int table_cols_ = 12;
+	const int max_pots_ = table_rows_*table_cols_;
+	std::vector<Pot> pot_map_;
+
+	Eigen::Matrix4d release_pose_;
+
+	std::vector<std::string> pot_labels;
 
 	VisionArmCombo();
 
@@ -310,10 +336,15 @@ struct VisionArmCombo
 	void find3DMarker(PointCloudT::Ptr marker_cloud);
 	bool scanSphereOnTable(Eigen::Vector3d & hand_pos, Eigen::Vector3d & sphere_pos, int side=0);
 	void initEXO_RGB_Cam();
-	void localizeByScanSpheres(int robot_stop=0, int side = 0);	//side 0-left side 1-right
+	bool localizeByScanSpheres(int robot_stop=0, int side = 0);	//side 0-left side 1-right
 	void gotoPot(int robot_stop, int side, int local_pot_x, int local_pot_y, bool open_gripper=false);
 	void scanPot(int robot_stop, int side, int local_pot_x, int local_pot_y);
-	void gotoBalance();
+	void transportPotOnBalance(bool open_finger_on_balance=true);
+	void gotoBalance(int pot_id);
+	
+	void placePots(int operation);
+	void initPotMap();
+	void registerRGBandPointCloud(cv::Mat & rgb, PointCloudT::Ptr cloud_in_base, Eigen::Matrix4d & rgb_pose);
 };
 
 
