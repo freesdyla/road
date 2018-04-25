@@ -1,5 +1,6 @@
 #include "RobotArmClient.h"
 
+
 RobotArmClient::RobotArmClient()
 {
 	TCP_ALIVE = true;
@@ -380,6 +381,9 @@ void RobotArmClient::waitTillTCPMove()
 		Sleep(1);
 	}
 
+	getCartesianInfo(sync_pose_);
+	getTCPSpeed(tcp_sync_speed_);
+
 	//return counter;
 }
 
@@ -406,4 +410,25 @@ void RobotArmClient::moveHandRelativeTranslate(double x, double y, double z, flo
 	pose[2] += z;
 	moveHandL(pose, acceleration, speed);
 	waitTillHandReachDstPose(pose);
+}
+
+//R
+int RobotArmClient::setAnalogOutput(int ID, float value) {
+	char msg[128];
+
+	sprintf(msg, "set_analog_out(%d,%f)\n",
+		ID, value);
+
+	return send(ConnectSocket, msg, strlen(msg), 0);
+}
+
+int RobotArmClient::setDigitalOutput(int ID, bool b) {
+	char msg[128];
+	if (b) {
+		sprintf(msg, "set_digital_out(%d,True)\n",ID);
+	 }
+	else {
+		sprintf(msg, "set_digital_out(%d,False)\n",ID);
+	}
+	return send(ConnectSocket, msg, strlen(msg), 0);
 }

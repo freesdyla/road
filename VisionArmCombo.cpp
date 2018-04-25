@@ -22,7 +22,6 @@ VisionArmCombo::VisionArmCombo() :
 		}
 
 		std::cout << "pot num: " << pot_labels.size() << "\n";
-
 	}
 	else
 	{
@@ -46,10 +45,7 @@ void VisionArmCombo::initVisionCombo()
 #if 1
 	gripper_.activate();
 	gripper_.open();
-#endif
-
-#if 1
-	initEXO_RGB_Cam();
+	//gripper_.close();
 #endif
 
 	viewer_.reset(new pcl::visualization::PCLVisualizer("3D Viewer"));
@@ -79,15 +75,18 @@ void VisionArmCombo::initVisionCombo()
 				handToScanner_.row(i)(j) = *(ptr);
 			}
 		std::cout << "handToScanner:\n" << handToScanner_ << "\n";
-		}
+	}
 	else std::cout << "lineScannerHandEyeCalibration load fail\n";
 	file.close();
 
-	cv::FileStorage fs("tool_center_point_calib.yml", cv::FileStorage::READ);
+	cv::FileStorage fs("gripper_tip_calib.yml", cv::FileStorage::READ);
 	cv::Vec3d tcp;
+	cv::Vec3d tcp_tube_1, tcp_tube_2;
 	if (fs.isOpened())
 	{
 		fs["tcp"] >> tcp;
+		fs["tube_1"] >> tcp_tube_1;
+		fs["tube_2"] >> tcp_tube_2;
 	}
 	fs.release();
 
@@ -113,11 +112,16 @@ void VisionArmCombo::initVisionCombo()
 	hand_to_gripper_(0, 0) = -1.;
 	hand_to_gripper_(2, 2) = -1.;
 	
-
 	hand_to_gripper_.col(3).head(3) << 0.0381, -0.0827999, -0.3683;
 
 //	hand_to_gripper_.col(3).head(3) << 0.0, -0.0, -0.3683;
-	
+
+	hand_to_tube1_ = Eigen::Matrix4d::Identity();
+
+	hand_to_tube1_(0, 0) = -1.;
+	hand_to_tube1_(2, 2) = -1.;
+
+	hand_to_tube1_.col(3).head(3) << tcp_tube_1[0], tcp_tube_1[1], tcp_tube_1[2];
 
 	fs.open("kinectRGBCalibration.yml", cv::FileStorage::READ);
 
@@ -210,16 +214,21 @@ void VisionArmCombo::initVisionCombo()
 		fs["move_joint_speed_"] >> move_joint_speed_;
 		fs["move_joint_acceleration_"] >> move_joint_acceleration_;
 		fs["view_time_"] >> view_time_;
+		fs["exposure_time_"] >> exposure_time_;
 
 		fs.release();
 	}
+
+#if 1
+	initEXO_RGB_Cam();
+#endif
+
+	pump = new Motor();
 
 	int status = motor_controller_.Connect("COM1");
 
 	if (status != RQ_SUCCESS)
 		std::cout << "Error connecting to motor controller: " << status << "\n";
-
-
 }
 
 void VisionArmCombo::pp_callback(const pcl::visualization::PointPickingEvent& event, void*)
@@ -412,7 +421,7 @@ void VisionArmCombo::calibrateToolCenterPoint(int numPoseNeeded)
 	std::cout << "Saved" << std::endl;
 }
 
-void VisionArmCombo::calibrateGripperTip(int numPoseNeeded)
+void VisionArmCombo::calibrateGripperTip(int numPoseNeeded = 4, std::string type = "gripper")
 {
 	if (robot_arm_client_ == NULL) initRobotArmClient();
 
@@ -486,12 +495,31 @@ void VisionArmCombo::calibrateGripperTip(int numPoseNeeded)
 		poseIdx++;
 	}
 
+	cv::FileStorage fs_read("gripper_tip_calib.yml", cv::FileStorage::READ);
+
+	std::vector<cv::Vec3d> tcp3(3);
+
+	fs_read["gripper"] >> tcp3[0];
+	fs_read["tube_1"] >> tcp3[1];
+	fs_read["tube_2"] >> tcp3[2];
+
+	fs_read.release();
+
 	cv::FileStorage fs("gripper_tip_calib.yml", cv::FileStorage::WRITE);
 
 	cv::Vec3d tcp;
 	tcp[0] = vec3d(0); tcp[1] = vec3d(1); tcp[2] = vec3d(2);
 
-	fs << "gripper" << tcp;
+	if (type == "gripper")
+		tcp3[0] = tcp;
+	else if (type == "tube_1")
+		tcp3[1] = tcp;
+	else if (type == "tube_2")
+		tcp3[2] = tcp;
+
+	fs << "gripper" << tcp3[0];
+	fs << "tube_1" << tcp3[1];
+	fs << "tube_2" << tcp3[2];
 
 	fs.release();
 
@@ -525,31 +553,44 @@ void VisionArmCombo::scanTranslateOnly(double * vec3d, PointCloudT::Ptr  cloud, 
 	std::memcpy(endPoseD, curPoseD, 48);
 	for (int i = 0; i < 3; i++) endPoseD[i] += vec3d[i];
 
-	double sync_pose[6];
+	//double sync_pose[6];
 
 	if (line_profiler_->device_initialized == false)
 		line_profiler_->init();
 
 	line_profiler_->m_vecProfileData.clear();
-	double tcp_sync_speed[6];
+	
+	//double tcp_sync_speed[6];
 	robot_arm_client_->setStartPoseXYZ();
+
+	unsigned int start_frame_id = 0;
+
 	robot_arm_client_->moveHandL(endPoseD, acceleration, speed);
-	robot_arm_client_->waitTillTCPMove();
-	
+
 	line_profiler_->start(20);
+
+	robot_arm_client_->waitTillTCPMove();
+
+	start_frame_id = line_profiler_->frame_counter_;
 	
-	robot_arm_client_->getCartesianInfo(sync_pose);
-	robot_arm_client_->getTCPSpeed(tcp_sync_speed);
+	//old synchronization
+	//line_profiler_->start(20);
+	//robot_arm_client_->getCartesianInfo(sync_pose);
+	//robot_arm_client_->getTCPSpeed(tcp_sync_speed);
 	
 	robot_arm_client_->waitTillHandReachDstPose(endPoseD);
 	line_profiler_->stop();
+
+	std::cout << "start_frame_id: " << start_frame_id << "\n";
 
 	// register point cloud
 	cloud->clear();
 
 	int num_profiles = line_profiler_->m_vecProfileData.size();
 
-	double sync_speed = sqrt(tcp_sync_speed[0] * tcp_sync_speed[0] + tcp_sync_speed[1] * tcp_sync_speed[1] + tcp_sync_speed[2] * tcp_sync_speed[2]);
+	double sync_speed = sqrt(robot_arm_client_->tcp_sync_speed_[0] * robot_arm_client_->tcp_sync_speed_[0] 
+					+ robot_arm_client_->tcp_sync_speed_[1] * robot_arm_client_->tcp_sync_speed_[1] 
+					+ robot_arm_client_->tcp_sync_speed_[2] * robot_arm_client_->tcp_sync_speed_[2]);
 
 	std::cout <<"tcp sync speed: "<<sync_speed<< "\n";
 
@@ -561,7 +602,7 @@ void VisionArmCombo::scanTranslateOnly(double * vec3d, PointCloudT::Ptr  cloud, 
 	array6ToEigenMat4(curPoseD, startPose);
 	array6ToEigenMat4(endPoseD, endPose);
 
-	double sync_distance = robot_arm_client_->EuclideanDistance(curPoseD, sync_pose);
+	double sync_distance = robot_arm_client_->EuclideanDistance(curPoseD, robot_arm_client_->sync_pose_);
 
 	std::cout << "sync distance: " << sync_distance << "\n";
 
@@ -602,9 +643,9 @@ void VisionArmCombo::scanTranslateOnly(double * vec3d, PointCloudT::Ptr  cloud, 
 	//std::cout << "x start: " << line_profiler_->m_profileInfo.lXStart << " pitch: " << line_profiler_->m_profileInfo.lXPitch << "\n";
 
 	// 2k sampling frequency (0.5ms)
-	float distance = 0.f;
+	float distance = 0;
 
-	float time = 0.f;
+	double time = 0;
 
 	time = sync_speed / acceleration;
 
@@ -626,7 +667,7 @@ void VisionArmCombo::scanTranslateOnly(double * vec3d, PointCloudT::Ptr  cloud, 
 	
 	motionVector.normalize();
 
-	for (int i = 0; i < num_profiles; i++)
+	for (int i = start_frame_id; i < num_profiles; i++)
 	{
 		if (time <= start_cruise_time)
 			distance = 0.5f*acceleration*time*time;
@@ -635,7 +676,7 @@ void VisionArmCombo::scanTranslateOnly(double * vec3d, PointCloudT::Ptr  cloud, 
 		else
 			distance = magnitude - pow(total_time - time, 2.f)*0.5f*acceleration;
 
-		time += 5e-4f;	// 0.5 ms
+		time += 5e-4;	// 0.5 ms
 
 		// the offset maybe be related to scan speed
 		Eigen::Vector3f displacement = motionVector*(distance + speed_correction_);
@@ -652,9 +693,15 @@ void VisionArmCombo::scanTranslateOnly(double * vec3d, PointCloudT::Ptr  cloud, 
 				point.x = (float)(line_profiler_->m_profileInfo.lXStart + j*line_profiler_->m_profileInfo.lXPitch)*(1e-8f) + displacement(0);
 				point.z += 0.3f + displacement(2);
 
-				point.r = ((int)(point.z*100000))%255;//(uint8_t)(255.f - 255.f*(point.z + 0.141f) / 0.282f);
-				point.g = point.r;
-				point.b = 255;
+				uint32_t r = ((uint32_t)(point.z * 100000)) % 255;
+				
+				uint32_t rgb = r << 16 | r << 8 | (uint32_t)255;
+
+				point.rgb = *reinterpret_cast<float*>(&rgb);
+
+				//point.r = ((int)(point.z*100000))%255;//(uint8_t)(255.f - 255.f*(point.z + 0.141f) / 0.282f);
+				//point.g = point.r;
+				//point.b = 255;
 
 				cloud->push_back(point);
 			}
@@ -4801,7 +4848,7 @@ void VisionArmCombo::scanPot(int robot_stop, int side, int local_pot_x, int loca
 	viewer_->spin();
 }
 
-void VisionArmCombo::registerRGBandPointCloud(cv::Mat & rgb, PointCloudT::Ptr cloud_in_base, Eigen::Matrix4d & rgb_pose)
+void VisionArmCombo::registerRGBandPointCloud(cv::Mat & rgb, PointCloudT::Ptr cloud_in_base, Eigen::Matrix4d & rgb_pose, bool clear_viewer)
 {
 	std::vector<cv::Point3f> object_points(cloud_in_base->points.size());
 	for (int i = 0; i<cloud_in_base->points.size(); i++)
@@ -4870,10 +4917,14 @@ void VisionArmCombo::registerRGBandPointCloud(cv::Mat & rgb, PointCloudT::Ptr cl
 	viewer_->addPolygonMesh(mesh, "mesh", 0);
 	viewer_->spin();
 #endif
-	viewer_->removeAllPointClouds();
-	viewer_->addPointCloud(cloud_in_base, "rgb_cloud", 0);
+	if(clear_viewer)
+		viewer_->removeAllPointClouds();
+	std::string name = "rgb_cloud" + std::to_string(cv::getTickCount());
+	viewer_->addPointCloud(cloud_in_base, name);
+	viewer_->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, name);
 	display();
-	viewer_->removeAllPointClouds();
+	if(clear_viewer)
+		viewer_->removeAllPointClouds();
 }
 
 void VisionArmCombo::transportPotOnBalance(bool open_finger_on_balance)
@@ -4885,25 +4936,34 @@ void VisionArmCombo::transportPotOnBalance(bool open_finger_on_balance)
 	array6[2] = -129.18; array6[3] = -91.61;
 	array6[4] = 270.06; array6[5] = -34.01;
 	for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+
+#ifndef JUST_SCAN_A_POT
 	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+#endif
 
 	std::cout << "move above balance done\n";
 
 	// put it down
 	array6[0] = -0.020; array6[1] = 0.3458; array6[2] = 0.500;
 	array6[3] = 0; array6[4] = 0; array6[5] = M_PI;
+#ifndef JUST_SCAN_A_POT
 	robot_arm_client_->moveHandL(array6, 0.1, 0.1);
 	robot_arm_client_->waitTillHandReachDstPose(array6);
+#endif
 
 	std::cout << "put it down\n";
 
 	// final
 	array6[0] = -0.02; array6[1] = 0.3458; array6[2] = 0.351;
 	array6[3] = 0; array6[4] = 0; array6[5] = M_PI;
+#ifndef JUST_SCAN_A_POT
 	robot_arm_client_->moveHandL(array6, 0.1, 0.05);
 	robot_arm_client_->waitTillHandReachDstPose(array6);
+#endif
 
 	array6ToEigenMat4d(array6, release_pose_);
+
+#ifndef JUST_SCAN_A_POT
 
 	if (open_finger_on_balance)
 		gripper_.open();
@@ -4928,20 +4988,191 @@ void VisionArmCombo::transportPotOnBalance(bool open_finger_on_balance)
 	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
 
 	std::cout << "move above balance\n";
+#endif
 }
 
 void VisionArmCombo::gotoBalance(int pot_id)
 {
+	double array6[6];
+
 	transportPotOnBalance(true);
 
-	double array6[6];
+#ifndef JUST_SCAN_A_POT
 	//switch camera
 	robot_arm_client_->getCurJointPose(array6);
 	array6[4] = M_PI_2;
 	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+#endif
 
+	std::vector<PointCloudT::Ptr> cloud_vec;
+
+	std::vector<std::vector<double>> scan_start_poses;
+
+	std::vector<std::vector<double>> scan_translations;
+	
+	std::vector<double> scan_start_pose_0 = { -0.2, 0.439, 0.35, M_PI, 0, 0 };
+	scan_start_poses.push_back(scan_start_pose_0);
+	std::vector<double> scan_translation_0 = { 0.15, 0, 0};
+	scan_translations.push_back(scan_translation_0);
+
+	std::vector<double> scan_start_pose_1 = { 0.093, 0.439, 0.298, 3.0414, 0, -0.787};
+	scan_start_poses.push_back(scan_start_pose_1);
+	std::vector<double> scan_translation_1 = { -0.15, 0, 0 };
+	scan_translations.push_back(scan_translation_1);
+
+	std::vector<double> scan_start_pose_2 = { -0.38, 0.439, 0.298, 3.0414, 0, 0.787 };
+	scan_start_poses.push_back(scan_start_pose_2);
+	std::vector<double> scan_translation_2 = { 0.15, 0, 0 };
+	scan_translations.push_back(scan_translation_2);
+
+	std::vector<double> scan_start_pose_3 = { -0.067, 0.612, 0.344, 1.8483, 1.9444, -0.5613 };
+	scan_start_poses.push_back(scan_start_pose_3);
+	std::vector<double> scan_translation_3 = { 0, -0.15, 0 };
+	scan_translations.push_back(scan_translation_3);
+
+	std::vector<double> scan_start_pose_4 = { -0.067, 0.287, 0.35, 2.1692, 2.2741, 0.0288 };
+	scan_start_poses.push_back(scan_start_pose_4);
+	std::vector<double> scan_translation_4 = { 0, 0.15, 0 };
+	scan_translations.push_back(scan_translation_4);
+
+#if 1
+	Eigen::Matrix4d rgb_pose = release_pose_*hand_to_gripper_;
+	rgb_pose.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+	rgb_pose(1, 1) = -1.;
+	rgb_pose(2, 2) = -1.;
+	rgb_pose(2, 3) = 0.17;
+
+	Eigen::Matrix4d hand_pose = rgb_pose*hand_to_rgb_.inverse();
+	eigenMat4dToArray6(hand_pose, array6);
+
+	robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
+	robot_arm_client_->waitTillHandReachDstPose(array6);
+
+	Sleep(1000);
+	exo_rgb_cam_->acquireRGBImage();
+	cv::Mat undistort;
+	cv::undistort(exo_rgb_cam_->rgb_frame, undistort, kinect_rgb_camera_matrix_cv_, kinect_rgb_dist_coeffs_cv_);
+	cv::Mat tmp;
+	cv::resize(undistort, tmp, cv::Size(), 0.5, 0.5);
+	cv::imshow("exo", tmp);
+	cv::waitKey(100);
+#endif
+
+	std::string name="";
+
+	
+
+	if (pot_id < pot_labels.size()) {
+
+		name = "Data\\" + pot_labels[pot_id];
+		cv::imwrite(name + ".bmp", undistort);
+		cv::FileStorage fs(name + ".yml", cv::FileStorage::WRITE);
+
+		cv::Mat rgb_pose_cv;
+		
+		EigenMatrix4dToCVMat4d(rgb_pose, rgb_pose_cv);
+
+		fs << "rgb_pose" << rgb_pose_cv;
+
+		fs.release();
+	}
+
+	for (int i = 0; i < scan_start_poses.size(); i++) {
+
+		robot_arm_client_->moveHandL(scan_start_poses[i].data(), move_arm_acceleration_, move_arm_speed_);
+		robot_arm_client_->waitTillHandReachDstPose(scan_start_poses[i].data());
+		Sleep(1000);
+
+		PointCloudT::Ptr scan_cloud(new PointCloudT);
+		PointCloudT::Ptr tmp_cloud(new PointCloudT);
+
+		Eigen::Matrix4f cur_pose; getCurHandPose(cur_pose);
+		
+		line_profiler_->m_vecProfileData.clear();
+		scanTranslateOnly(scan_translations[i].data(), scan_cloud, scan_acceleration_, scan_speed_);
+
+		pcl::transformPointCloud(*scan_cloud, *tmp_cloud, cur_pose*handToScanner_);
+
+		pass_.setInputCloud(tmp_cloud);
+		pass_.setNegative(false);
+		pass_.setFilterFieldName("z");
+		pass_.setFilterLimits(0.01, 0.1);
+		pass_.filter(*scan_cloud);
+
+		// empty point cloud, return;
+		if (scan_cloud->size() < 100)
+			return;
+
+		uint32_t rgb;
+
+		if (i == 0) rgb = ((uint32_t)255 << 16);
+		else if (i == 1) rgb = ((uint32_t)255 << 8);
+		else if (i == 2) rgb = ((uint32_t)255);
+		else if (i == 3) rgb = ((uint32_t)255<<16 | (uint32_t)255 << 8);
+
+		for (auto & p : scan_cloud->points) 
+			p.rgb = *reinterpret_cast<float*>(&rgb);
+
+		cloud_vec.push_back(scan_cloud);
+
+		//viewer_->addPointCloud(scan_cloud, "scan_cloud"+std::to_string(i), 0);
+		//viewer_->spin();
+		//viewer_->removePointCloud("scan_cloud"+std::to_string(i));
+#if 0
+		Eigen::Matrix4d rgb_pose = cur_pose.cast<double>();
+		rgb_pose.col(3).head<3>() = (cur_pose.cast<double>() * handToScanner_.col(3).cast<double>()).head<3>();
+
+		rgb_pose.col(3).head<3>() += rgb_pose.col(2).head<3>()*0.05;
+
+		rgb_pose(0, 3) += 0.5*scan_translations[i][0];
+		rgb_pose(1, 3) += 0.5*scan_translations[i][1];
+		rgb_pose(2, 3) += 0.5*scan_translations[i][2];
+
+		std::cout << "rgb_pose:\n" << rgb_pose << "\n";
+
+		Eigen::Vector3d z_axis = rgb_pose.col(2).head<3>();
+
+	//	rgb_pose.block<3, 3>(0, 0) = rgb_pose.block<3, 3>(0, 0)*Eigen::AngleAxisd(-0.5*M_PI, z_axis).matrix();
+
+		//std::cout << "rgb_pose:\n" << rgb_pose << "\n";
+
+
+		Eigen::Matrix4d hand_pose = rgb_pose*hand_to_rgb_.inverse();
+		eigenMat4dToArray6(hand_pose, array6);
+
+		std::cout << "hand_pose:\n" << hand_pose << "\n";
+
+		std::getchar();
+
+		robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
+		robot_arm_client_->waitTillHandReachDstPose(array6);
+
+		Sleep(1000);
+		exo_rgb_cam_->acquireRGBImage();
+		cv::Mat undistort;
+		cv::undistort(exo_rgb_cam_->rgb_frame, undistort, kinect_rgb_camera_matrix_cv_, kinect_rgb_dist_coeffs_cv_);
+		cv::Mat tmp;
+		cv::resize(undistort, tmp, cv::Size(), 0.5, 0.5);
+		cv::imshow("exo", tmp);
+		cv::waitKey(100);
+#endif
+		registerRGBandPointCloud(exo_rgb_cam_->rgb_frame, scan_cloud, rgb_pose, true);
+
+#if 1
+		if (pot_id < pot_labels.size())
+		{
+			pcl::io::savePCDFileBinary(name +"_scan_"+std::to_string(i)+ ".pcd", *scan_cloud);
+		}
+#endif
+	}
+
+	//fs.release();
+	getchar();
+	return;
+	
+#if 0
 	// move to scan start pose
-	array6[0] = -0.2; array6[1] = 0.439; array6[2] = 0.294;
+	array6[0] = -0.2; array6[1] = 0.439; array6[2] = 0.35;
 	array6[3] = M_PI; array6[4] = 0; array6[5] = 0;
 	robot_arm_client_->moveHandL(array6, move_arm_acceleration_, move_arm_speed_);
 	robot_arm_client_->waitTillHandReachDstPose(array6);
@@ -4961,7 +5192,7 @@ void VisionArmCombo::gotoBalance(int pot_id)
 	pass_.setInputCloud(tmp_cloud);
 	pass_.setNegative(false);
 	pass_.setFilterFieldName("z");
-	pass_.setFilterLimits(-0.04, 0.06);
+	pass_.setFilterLimits(-0.04, 0.1);
 	pass_.filter(*scan_cloud);
 
 //	viewer_->addPointCloud(scan_cloud, "scan_cloud", 0);
@@ -4997,12 +5228,16 @@ void VisionArmCombo::gotoBalance(int pot_id)
 		
 		pcl::io::savePCDFileBinary(name + ".pcd", *scan_cloud);
 
-		vector<int> compression_params;
-		compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
-		compression_params.push_back(9);
-		cv::imwrite(name + ".png", undistort, compression_params);
-	}
+		//vector<int> compression_params;
+		//compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
+		//compression_params.push_back(9);
+		//cv::imwrite(name + ".png", undistort, compression_params);
 
+		cv::imwrite(name + ".bmp", undistort);
+	}
+#endif
+
+#ifndef JUST_SCAN_A_POT
 	//move above balance with camera facing down
 	array6[0] = -0.020; array6[1] = 0.3458; array6[2] = 0.500;
 	array6[3] = M_PI; array6[4] = 0; array6[5] = 0;
@@ -5014,7 +5249,22 @@ void VisionArmCombo::gotoBalance(int pot_id)
 	array6[4] = M_PI_2*3.;
 	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
 
+	//water
+	double waterconfig[6] = {136.01, -49.07, -155.83, -64.96, 270.02, -45.88};
+	for (int i = 0; i < 6; i++) waterconfig[i] = waterconfig[i] / 180.*M_PI;
+	robot_arm_client_->moveHandJ(waterconfig, move_joint_speed_, move_joint_acceleration_, true);
+
+	std::cout << "watering...\n";
+
+	Sleep(5000);
+//	getWater(5, true);
+
+	robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+
+	pump->getWeightClear(2);
+
 	transportPotOnBalance(false);
+#endif
 }
 
 void VisionArmCombo::placePots(int operation)
@@ -5027,16 +5277,19 @@ void VisionArmCombo::placePots(int operation)
 
 	Eigen::Matrix4f cur_pose; getCurHandPose(cur_pose);
 
+#if 0
 	if (cur_pose(2, 2) >= 0.)	//check z direction
 	{
 		std::cout << "gripper pointing down!\n";
 		return;
 	}
+#endif
 
 	double array6[6];
 
 	for (int cur_robot_stop = 0; cur_robot_stop < 3; cur_robot_stop++)
 	{
+#if 0
 		// move robot to destination
 		sendRoboteqVar(1, cur_robot_stop+1);	//roboteq start from 1
 
@@ -5054,14 +5307,17 @@ void VisionArmCombo::placePots(int operation)
 			if (result == 1) break;
 			Sleep(500);
 		}
-
+#endif
 		//std::cout << "Press key\n"; std::getchar(); continue;
-		
-		for (int cur_side = 1; cur_side >= 0; cur_side--)
+		//1: right side of the robot; 0: left side
+		//for (int cur_side = 1; cur_side >= 0; cur_side--)
+		for (int cur_side = 0; cur_side >= 0; cur_side--)
 		{
 			viewer_->removeAllShapes();
 
-			if (localizeByScanSpheres(cur_robot_stop, cur_side))
+#ifndef JUST_SCAN_A_POT
+			if (localizeByScanSpheres(cur_robot_stop, cur_side))	//comment if only scan a pot
+#endif
 			{
 				//continue;
 
@@ -5073,11 +5329,15 @@ void VisionArmCombo::placePots(int operation)
 				array6[2] = -90; array6[3] = -90;
 				array6[4] = 90; array6[5] = 0;
 				for (int i = 0; i < 6; i++)	array6[i] = array6[i] / 180.*M_PI;
+
+				//disable if only scan a pot
+#ifndef JUST_SCAN_A_POT	
 				robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
 
 				// rotate gripper down
 				array6[4] = M_PI_2*3;
 				robot_arm_client_->moveHandJ(array6, move_joint_speed_, move_joint_acceleration_, true);
+#endif
 
 				int count = 0;
 
@@ -5101,15 +5361,24 @@ void VisionArmCombo::placePots(int operation)
 						}
 						else if (operation == PICK_POT)
 						{
-							gripper_.open();
+
+#ifndef JUST_SCAN_A_POT 
+							gripper_.open();	//comment to just scan
+#else
+						//	gripper_.close(); std::getchar();
+#endif
 
 							Sleep(500);
 
-							gotoPot(cur_robot_stop, cur_side, pot_map_[pot_id].local_pot_x, pot_map_[pot_id].local_pot_y, false);
-							
+#ifndef JUST_SCAN_A_POT 
+							gotoPot(cur_robot_stop, cur_side, pot_map_[pot_id].local_pot_x, pot_map_[pot_id].local_pot_y, false); //comment to just scan
+#endif	
+
 							gotoBalance(pot_id);
 
-							gotoPot(cur_robot_stop, cur_side, pot_map_[pot_id].local_pot_x, pot_map_[pot_id].local_pot_y, true);
+#ifndef JUST_SCAN_A_POT 
+							gotoPot(cur_robot_stop, cur_side, pot_map_[pot_id].local_pot_x, pot_map_[pot_id].local_pot_y, true); //comment to just scan
+#endif
 						}
 					}
 
@@ -5137,6 +5406,7 @@ void VisionArmCombo::placePots(int operation)
 void VisionArmCombo::initEXO_RGB_Cam()
 {
 	exo_rgb_cam_ = new EXO_RGB_CAM();
+	exo_rgb_cam_->exposure_time_ = exposure_time_;
 	exo_rgb_cam_->init();
 }
 
@@ -5176,6 +5446,93 @@ void VisionArmCombo::initPotMap()
 		{
 			p->side = 0;
 			p->local_pot_x = x - table_cols_ / 2;
+		}
+	}
+}
+
+int VisionArmCombo::getWater(float weight, bool b) { 
+	int dig_id, ana_id, switch_id;
+	float weight_th;
+	int sleeptime;
+	if (b) { //water
+		dig_id = 7; ana_id = 0; weight_th = -1.1;
+		switch_id = 5;//off-forward on-backward
+		sleeptime = 500;
+	}
+	else {  //additive
+		dig_id = 6; ana_id = 1; weight_th = -1.4;
+		switch_id = 4;//on forward off-backward
+		sleeptime = 1000;
+	}
+
+	robot_arm_client_->setDigitalOutput(dig_id, false); //brake
+	Sleep(1000);
+
+	pump->getWeightClear(2);
+	Sleep(1000);
+	//run
+	if (b) {
+		robot_arm_client_->setDigitalOutput(switch_id, false);
+	}
+	else {
+		robot_arm_client_->setDigitalOutput(switch_id, true);
+	}
+	Sleep(100);
+	robot_arm_client_->setAnalogOutput(ana_id, 0.3); Sleep(100);
+	robot_arm_client_->setDigitalOutput(dig_id, true); 
+
+	while (pump->getWeight(2) - weight < weight_th) {
+		Sleep(10);
+		std::cout << "water: " << pump->getWeight(2) << std::endl;
+	}
+
+	robot_arm_client_->setDigitalOutput(dig_id, false); //brake
+	Sleep(sleeptime);  
+
+	//feedback
+	while (pump->getWeight(2) - weight < -0.1) { 
+		robot_arm_client_->setAnalogOutput(ana_id, 0); Sleep(100);
+		robot_arm_client_->setDigitalOutput(dig_id, true);
+		Sleep(500);
+		robot_arm_client_->setDigitalOutput(dig_id, false); //brake
+		Sleep(500);
+//		std::cout << "The weight is  " << pump->getWeight(2) << std::endl;
+	}
+	
+	float temp = pump->getWeight(2);
+	Sleep(1000);
+	if (pump->getWeight(2) - temp > 0.1) {
+		std::cout << "The pump hasn't stopped!" << std::endl;
+		return -1;
+	}
+
+	//backward start
+	cout << "starting backward!" << endl;
+	if (b) {
+		robot_arm_client_->setDigitalOutput(switch_id, true); 
+	}
+	else {
+		robot_arm_client_->setDigitalOutput(switch_id, false); 
+	}
+	Sleep(100);
+	robot_arm_client_->setAnalogOutput(ana_id, 0.3); Sleep(100);//////////////
+	robot_arm_client_->setDigitalOutput(dig_id, true);
+	Sleep(1500-sleeptime); //if true sleep 1000
+
+	robot_arm_client_->setDigitalOutput(dig_id, false);
+	Sleep(100);
+
+	gripper_.open(0xF900);
+	gripper_.close(0xF900);
+	gripper_.open(0xF900);
+}
+
+void VisionArmCombo::EigenMatrix4dToCVMat4d(Eigen::Matrix4d & eigen_mat, cv::Mat & cv_mat)
+{
+	cv_mat.create(4, 4, CV_64F);
+	for (int y = 0; y < 4; y++) {
+		for (int x = 0; x < 4; x++) {
+			cv_mat.at<double>(y, x) = eigen_mat(y, x);
 		}
 	}
 }

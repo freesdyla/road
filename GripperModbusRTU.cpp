@@ -73,7 +73,7 @@ int GripperModbusRTU::activate()
 	return 0;
 }
 
-int GripperModbusRTU::close()
+int GripperModbusRTU::close(unsigned short speed_force )
 {
 	if (mb_ == NULL)
 	{
@@ -83,7 +83,7 @@ int GripperModbusRTU::close()
 
 	tab_reg_[0] = 0x0900;
 	tab_reg_[1] = 0x00FF;	//full close 255
-	tab_reg_[2] = 0x1000;	//speed, force
+	tab_reg_[2] = speed_force;	//speed, force
 
 	int num_bytes = modbus_write_registers(mb_, 0x03E8, 3, tab_reg_);
 
@@ -103,7 +103,7 @@ int GripperModbusRTU::close()
 	return 0;
 }
 
-int GripperModbusRTU::open()
+int GripperModbusRTU::open(unsigned short speed_force)
 {
 	if (mb_ == NULL)
 	{
@@ -113,7 +113,7 @@ int GripperModbusRTU::open()
 
 	tab_reg_[0] = 0x0900;
 	tab_reg_[1] = 140;//0x00A0;	//ls byte is position
-	tab_reg_[2] = 0x1000;	//speed,force
+	tab_reg_[2] = speed_force;	//speed,force
 
 	int num_bytes = modbus_write_registers(mb_, 0x03E8, 3, tab_reg_);
 

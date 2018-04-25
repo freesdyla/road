@@ -87,8 +87,8 @@ int EXO_RGB_CAM::init()
 
 	//------------------------------------------------------------------------
 	Camera_setAcquisitionMode(Camera, ACQUISITION_MODE_SOFTWARE_TRIGGER);
-	float  exposure = 1400000; // us
-	Camera_setExposureTime(Camera, exposure);
+
+	Camera_setExposureTime(Camera, exposure_time_);
 	float Gain = 0; // 0 db
 	Camera_setGain(Camera, Gain);
 	/* if the  settings (binning mode, AOI, pixel depth, Flipping mode) have been changed

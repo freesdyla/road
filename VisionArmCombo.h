@@ -53,10 +53,15 @@
 #include "exo_rgb_cam.h"
 
 #include <boost/filesystem.hpp>
+#include "Motor.h"
+#include "Serial.h"
+
 using namespace boost::filesystem;
 
 #define PICK_POT 0x0
 #define PLACE_POT 0x1
+
+//#define JUST_SCAN_A_POT
 
 
 struct VisionArmCombo
@@ -116,6 +121,8 @@ struct VisionArmCombo
 	const int num_joints_ = 6;
 
 	RobotArmClient* robot_arm_client_ = NULL;
+
+	Motor* pump = NULL;
 
 	KeyenceLineProfiler* line_profiler_ = NULL;
 
@@ -183,6 +190,8 @@ struct VisionArmCombo
 
 	int view_time_ = 0;
 
+	float exposure_time_ = 1000000.;
+
 	int counter_;
 
 	// kmeans
@@ -198,7 +207,7 @@ struct VisionArmCombo
 
 	float marker_length_;
 
-	Eigen::Matrix4d cur_rgb_to_marker_, hand_to_rgb_, hand_to_gripper_;
+	Eigen::Matrix4d cur_rgb_to_marker_, hand_to_rgb_, hand_to_gripper_, hand_to_tube1_, hand_to_tube2_;
 
 	RoboteqDevice motor_controller_;
 
@@ -253,7 +262,7 @@ struct VisionArmCombo
 
 	void calibrateToolCenterPoint(int numPoseNeeded=4);
 
-	void calibrateGripperTip(int numPoseNeeded = 4);
+	void calibrateGripperTip(int numPoseNeeded, std::string type);
 
 	void scanTranslateOnly(double * vec3d, PointCloudT::Ptr cloud, float acceleration, float speed);
 
@@ -344,7 +353,10 @@ struct VisionArmCombo
 	
 	void placePots(int operation);
 	void initPotMap();
-	void registerRGBandPointCloud(cv::Mat & rgb, PointCloudT::Ptr cloud_in_base, Eigen::Matrix4d & rgb_pose);
+	void registerRGBandPointCloud(cv::Mat & rgb, PointCloudT::Ptr cloud_in_base, Eigen::Matrix4d & rgb_pose, bool clear_viewer=true);
+	int getWater(float weight, bool b);
+
+	void EigenMatrix4dToCVMat4d(Eigen::Matrix4d & eigen_mat, cv::Mat & cv_mat);
 };
 
 

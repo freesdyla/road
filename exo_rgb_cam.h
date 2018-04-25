@@ -30,6 +30,8 @@ struct EXO_RGB_CAM
 
 	static std::mutex RGBMutex;
 
+	float exposure_time_ = 1400000.;	//us
+
 	EXO_RGB_CAM::EXO_RGB_CAM();
 	
 	EXO_RGB_CAM::~EXO_RGB_CAM();

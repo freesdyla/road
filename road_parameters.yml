@@ -1,7 +1,8 @@
 %YAML 1.0
 ---
 move_arm_speed_: 0.2
-move_arm_acceleration_: 0.1
+move_arm_acceleration_: 0.15
 move_joint_speed_: 1.5
 move_joint_acceleration_: 0.7
-view_time_: 100
+view_time_: 1000000
+exposure_time_: 500000.

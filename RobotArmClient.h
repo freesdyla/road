@@ -54,6 +54,9 @@ struct RobotArmClient
 
 	double start_xyz_[3];
 
+	double tcp_sync_speed_[6];
+	double sync_pose_[6];
+
 	std::atomic<float> displacement_;
 
 	std::atomic<double> distanceToDst_;
@@ -117,7 +120,12 @@ struct RobotArmClient
 	void rotateJointRelative(int id, double deg, float acceleration, float speed);
 
 	void moveHandRelativeTranslate(double x, double y, double z, float acceleration, float speed);
-	
+//R
+	int setAnalogOutput(int ID, float value);
+
+	int setDigitalOutput(int ID, bool b);
+
+
 };
 
 #endif

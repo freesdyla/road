@@ -1,17 +1,34 @@
 #include "VisionArmCombo.h"
 #include <iostream>
 #include <ctime>
+#include <math.h>
 
 int main(int argc, char**argv)
 {
 	VisionArmCombo vac;
-	
+
+#if 0
+	while (1) {
+		float a;
+		float t;
+		cout << "input float a" << endl;
+		cin >> a;
+		cout << "a:  " << a << endl;
+		cin >> t;
+		cout << "t:  " << t << endl;
+		vac.getWater(a, true); //a->weight; true->water; false->additive	
+
+		cout << "enter to next turn" << endl;
+		getchar();
+	}
+#endif
+
 	//vac.calibrateToolCenterPoint(8); std::getchar(); return 0;
 
-	//vac.calibrateGripperTip(8);
+	//vac.calibrateGripperTip(4, "tube_2");
 
 	//vac.testLineScannerProbeCalibrationMatrix(); std::getchar(); return 0;
-	//vac.placePots(PICK_POT);
+	vac.placePots(PICK_POT);
 	//vac.placePots(PLACE_POT);
 //	vac.gotoBalance();
 

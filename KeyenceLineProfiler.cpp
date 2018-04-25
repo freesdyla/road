@@ -6,6 +6,8 @@ std::vector<PROFILE_DATA> KeyenceLineProfiler::m_vecProfileData;
 
 clock_t KeyenceLineProfiler::tic;
 
+unsigned int KeyenceLineProfiler::frame_counter_;
+
 void KeyenceLineProfiler::init()
 {
 	req.bySendPos = 2;	// send next available profile after start
@@ -107,10 +109,12 @@ void KeyenceLineProfiler::start(DWORD dwProfileCnt)
 		return;
 	}*/
 
+	frame_counter_ = 0;
+
 	// Start high-speed data communication.
 	//nRc = LJV7IF_StartHighSpeedDataCommunication(DEVICE_ID);
 	LJV7IF_StartHighSpeedDataCommunication(DEVICE_ID);
-
+	
 	//tic = clock();
 
 	//if (nRc != LJV7IF_RC_OK)
@@ -136,6 +140,8 @@ void KeyenceLineProfiler::ReceiveHighSpeedData(BYTE* pBuffer, DWORD dwSize, DWOR
 
 	int nProfDataCnt = (dwSize - sizeof(LJV7IF_PROFILE_HEADER)-sizeof(LJV7IF_PROFILE_FOOTER)) / sizeof(DWORD);
 
+	frame_counter_ += dwCount;
+
 	for (DWORD i = 0; i < dwCount; i++)
 	{
 		BYTE *pbyBlock = pBuffer + dwSize * i;
@@ -145,6 +151,7 @@ void KeyenceLineProfiler::ReceiveHighSpeedData(BYTE* pBuffer, DWORD dwSize, DWOR
 		LJV7IF_PROFILE_FOOTER* pFooter = (LJV7IF_PROFILE_FOOTER*)(pbyBlock + dwSize - sizeof(LJV7IF_PROFILE_FOOTER));
 
 		m_vecProfileData.push_back(PROFILE_DATA(m_profileInfo, pHeader, pnProfileData, pFooter));
+		
 	}
 
 	//std::cout << "dwCount: " << dwCount << " ";// << " size: " << m_vecProfileData.size() << std::endl;

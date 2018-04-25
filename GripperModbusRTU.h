@@ -13,8 +13,8 @@ struct GripperModbusRTU
 	GripperModbusRTU();
 	~GripperModbusRTU();
 	int activate();
-	int close();
-	int open();
+	int close(unsigned short speed_force = 0x1000);
+	int open(unsigned short speed_force = 0x1000);
 };
 
 #endif // !GRIPPER_MODBUS_RTU_H_
